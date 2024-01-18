@@ -2,6 +2,8 @@
 title: "Linear_Models"
 output: html_document
 date: "2024-01-18"
+editor_options: 
+  chunk_output_type: console
 ---
 ```{r}
 ###################################################
@@ -32,6 +34,7 @@ install.packages("car")
 install.packages("nortest")
 install.packages("multcomp")
 install.packages("lmerTest")
+install.packages("sjPlot")
 
 library(lme4)
 library(flexplot)
@@ -41,13 +44,23 @@ library(nortest)
 library(multcomp)
 library(hnp)
 library(lmerTest)
+library(sjPlot)
+
+oo <- options(repos = "https://cran.r-project.org/")
+install.packages("Matrix")
+install.packages("lme4")
+options(oo)
+
+install.packages("devtools")
+# install the stable version
+devtools::install_github("dustinfife/flexplot")
+# install the development version
+devtools::install_github("dustinfife/flexplot", ref="development")
 
 # ----------- Entrada dos dados --------------- #
 
-library(readr)
-P_dados <- read_csv("P_Labil.txt")
-View(P_dados)
-P_dados<- P_Labil
+P_dados<-P_Labil
+
 
 # Trasform. de BOX-COX  da variavel resposta P Labil 
 # Para normalizar os res?duos do modelo, isso ajudou muito a ter normalidade nos residuos.
@@ -125,12 +138,13 @@ modelo_baseline_Sistema <- lmer(BC_P_Lab_Per ~ 1 + (1|Sistema), data = P_dados)
 
 # Intra Class/Cluster Coprrelation (ICC)
 # Indica o quanto da variancia se deve ao agrupamento/efeito aleatorio da variavel
-# O desing effect indica o qaunto nosso tamanho amostra seria inflado se nao usarmos a variavel/cluster no modelo.
+# O desing effect indica o quanto nosso tamanho amostra seria inflado se nao usarmos a variavel/cluster no modelo.
 icc(modelo_baseline_Textura)
 icc(modelo_baseline_Profundidade)
 icc(modelo_baseline_Sistema)
 icc(modelo_baseline_Agregado)
 
+##########ONDE PODEMOS VER ISSO ????? #########
 # Textura explica 32.47% da variancia dos dados de porcentagem de P labil
 # Profundidade explica 0.8% da variancia
 # Sistema de manejo explica 26.53%
@@ -294,6 +308,7 @@ estimates(fit_16)
 estimates(fit_11)
 
 
+
 ###################################################
 #                                                 #
 #         teste Post-Hoc - COMPARAR MEDIAS        # 
@@ -409,8 +424,7 @@ Agregado_emmeans <- emmeans(fit_16, list(pairwise ~ Agregado), adjust = "tukey")
 
 detach(P_dados)
 
-
-
+visualize(model, plot="fit_16")
 
 ```
 
