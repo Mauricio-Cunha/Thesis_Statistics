@@ -1,0 +1,416 @@
+---
+title: "Linear_Models"
+output: html_document
+date: "2024-01-18"
+---
+```{r}
+###################################################
+#                                                 #
+#       ------ Fosforo Labil em solos ------      #
+#                                                 #
+###################################################
+
+# Delineamento cruzado e aninhado
+# P labil quantificado em:
+# 4 classes de agregados, 3 profundidades, varios sitemas de manejo e 3 texturas de solos
+# Desejamos saber o efeito do agregado sobre o P Labil
+# O delineamento e aninhado e cruzado
+
+# Se for usar alguma outra variavel preditora como materia organica, ela entra na estrutura do modelo.
+# Pense que temos que ter um modelo que use todas as informa??es para explicar a variavel resposta (y) e nao um modelo paracom cada variavel preditora por vez.
+# Eu usei a porcentagem de P labil (achei mais justo), mas podemos fazer o mesmo para o tero total de P Labil.
+
+
+# Pacotes para a analise
+
+install.packages("devtools") # Devtools is a package which allows to do this.
+devtools::install_github("dustinfife/flexplot")
+
+install.packages("lme4")
+install.packages("ggplot2")
+install.packages("car")
+install.packages("nortest")
+install.packages("multcomp")
+install.packages("lmerTest")
+
+library(lme4)
+library(flexplot)
+library(ggplot2)
+library(car)
+library(nortest)
+library(multcomp)
+library(hnp)
+library(lmerTest)
+
+# ----------- Entrada dos dados --------------- #
+
+library(readr)
+P_dados <- read_csv("P_Labil.txt")
+View(P_dados)
+P_dados<- P_Labil
+
+# Trasform. de BOX-COX  da variavel resposta P Labil 
+# Para normalizar os res?duos do modelo, isso ajudou muito a ter normalidade nos residuos.
+lambda_BC <- powerTransform(P_dados$P_Lab_Per)
+lambda_BC
+
+# Inserindo o lambda de Box-Cox na base de dados para a estimar um novo modelo
+P_dados$BC_P_Lab_Per <- (((P_dados$P_Lab_Per ^ lambda_BC$lambda) - 1) / 
+                           lambda_BC$lambda)
+
+View(P_dados)
+
+# Preciso transformar Character para factor
+P_dados$Agregado <- as.factor(P_dados$Agregado)
+P_dados$Sistema <- as.factor(P_dados$Sistema)
+P_dados$Profundidade <- as.factor(P_dados$Profundidade)
+P_dados$Textura <- as.factor(P_dados$Textura)
+
+attach(P_dados)
+
+##############################
+#                            #         
+#    Explorando os  dados    #
+#                            #
+##############################
+
+# Esse graficos sao legais.
+flexplot(P_Lab_Per ~ Agregado | Textura + Profundidade, data = P_dados)
+
+flexplot(P_Lab_Per ~ Agregado + Sistema | Textura + Profundidade, data = P_dados)
+
+flexplot(P_Lab_Per ~ Sistema | Textura + Profundidade, data = P_dados)
+
+flexplot(P_Lab_Per ~ Sistema | Textura + Profundidade + Agregado, data = P_dados)
+
+
+#---- Verificando o efeito do variaveis sobre P Labil -----#
+
+# modelo nulo
+modelo_nulo <- lm(formula = BC_P_Lab_Per ~ 1, data = P_dados)
+
+# modelo linear - P labil em funcao do Agregado
+modelo_linear <- lm(formula = BC_P_Lab_Per ~ Agregado, data = P_dados)
+modelo_linear_1 <- lm(formula = BC_P_Lab_Per ~ Profundidade, data = P_dados)
+modelo_linear_2 <- lm(formula = BC_P_Lab_Per ~ Sistema, data = P_dados)
+modelo_linear_3 <- lm(formula = BC_P_Lab_Per ~ Textura, data = P_dados)
+
+
+modelo_multiplo <- lm(formula = BC_P_Lab_Per ~ Agregado + Profundidade + Sistema + Textura)
+
+# Visualizar modelo
+visualize(modelo_nulo)
+visualize(modelo_linear)
+visualize(modelo_linear_1)
+visualize(modelo_linear_2)
+visualize(modelo_linear_3)
+visualize(modelo_multiplo)
+
+# comparar modelos - Essa e a primeira comparacao: modelo nulo vs. modelo linear simples.
+
+anova(modelo_linear, modelo_nulo) # valor de p < 0.05 indica diferen?a entre os modelos.
+anova(modelo_linear, modelo_multiplo)
+
+#---------- Baseline Model ------------#
+
+# O modelo Linhabase: serve para verificar o Intra Class Correlation (ICC)
+# O ICC indica a propor??o da vari?ncia total devida ao cluster/efeito aleatorio
+# O ICC varia de 0 a 1, quanto maior mais a varia??o ? devido ao cluster.
+
+modelo_baseline_Agregado <- lmer(BC_P_Lab_Per ~ 1 + (1|Agregado), data = P_dados)
+modelo_baseline_Textura <- lmer(BC_P_Lab_Per ~ 1 + (1|Textura), data = P_dados)
+modelo_baseline_Profundidade <- lmer(BC_P_Lab_Per ~ 1 + (1|Profundidade), data = P_dados)
+modelo_baseline_Sistema <- lmer(BC_P_Lab_Per ~ 1 + (1|Sistema), data = P_dados)
+
+
+# Intra Class/Cluster Coprrelation (ICC)
+# Indica o quanto da variancia se deve ao agrupamento/efeito aleatorio da variavel
+# O desing effect indica o qaunto nosso tamanho amostra seria inflado se nao usarmos a variavel/cluster no modelo.
+icc(modelo_baseline_Textura)
+icc(modelo_baseline_Profundidade)
+icc(modelo_baseline_Sistema)
+icc(modelo_baseline_Agregado)
+
+# Textura explica 32.47% da variancia dos dados de porcentagem de P labil
+# Profundidade explica 0.8% da variancia
+# Sistema de manejo explica 26.53%
+# Agregado explica 23.44% da variancia
+
+#####################################
+#                                   #
+#      Modelos Lineares Mistos      #        
+#                                   # 
+#####################################
+
+# Para selecionar o melhor modelo precisaremos fazer um passo a passo meio longo.
+# No fururo verificarei se consigo automatizar isso.
+# Sendo assim:
+# Temos nossa variavel resposta/explicativa "P Labil (%)" denominada "y"
+# Temos o efeito fixo "Agregados dos solo" que sera nossa variavel preditora "x"
+# Temos os efeitos aleatorios "Profundidade", "Sistema de Producao" e "Textura do solo".
+# Com base no delineamento, tudo indica que:
+# "Profundidade" e "Textura" sao efeitos cruzados e "sistema de manejo" esta aninhado em "Textura"
+# Portanto, vamos ter que fazer diferentes modelos para testar:
+# 1 - O efeito da variavel "Agregado" para explicar o P labil
+# 2 - O efeito das outras 3 variaveis/clusters para explicar o P labil (ICC)
+# 3 - Os efeitos aleatorios das variaveis/clusters sobre o intercepto e o slope do modelo.
+# 4 - Selecionar o melhor modelo com base no BIA, AIC e valor de p.
+# Modelo linear simples usamos Max. verossimilhanca, MLMistos usamos metoto RELM.
+# Se houver difenren?a entre os modleos, usamos o mais completo
+# Se nao houver diferen?a, usamos o mais simples com base no principio da parcimonia.
+
+
+# -------- Modelo Linear Misto com efeito aleatorio no intercepto ------------#
+
+# Nesse caso nao ha efeito aleatorio sobre  slope/inclinacao da reta.
+# Queremos saber o efeito no P Labil
+
+# Modelo com slope fixo - 1 efeito fixo e 1 efeito aleatorio
+fit_1 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Profundidade), data = P_dados)
+fit_2 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Sistema), data = P_dados)
+fit_3 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Textura), data = P_dados)
+
+# Modelo com slope fixo - 1 efeito fixo e 2 efeitos aleatorio
+fit_4 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Profundidade) + (1|Sistema), data = P_dados)
+fit_5 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Profundidade) +(1|Textura), data = P_dados)
+
+# Modelo com slope fixo - 1 efeito fixo e 3 efeitos aleatorio
+fit_6 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Profundidade) + (1|Sistema) + (1|Textura), data = P_dados)
+
+# Modelo com slope fixo - 1 efeito fixo e 2 efeitos aleatorio Aninhados
+fit_7 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Sistema/Profundidade), data = P_dados)
+
+# Modelo com slope fixo - 1 efeito fixo e 3 efeitos aleatorio - 2 Aninhados
+fit_8 <- lmer(BC_P_Lab_Per ~ Agregado + (1|Sistema/Profundidade) + (1|Textura), data = P_dados)
+
+# Modelo com slope fixo - 2 efeitos fixos
+fit_9 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + (1|Textura/Profundidade), data = P_dados)
+
+fit_10 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + (1|Textura) + (1|Profundidade), data = P_dados)
+
+fit_11 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + (1|Textura/Sistema) + (1|Profundidade/Agregado), data = P_dados)
+
+# Modelo com slope fixo - 3 efeitos fixos
+fit_12 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Profundidade + (1|Textura), data = P_dados)
+
+fit_13 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Profundidade + (1|Textura/Sistema), data = P_dados)
+
+fit_14 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Textura + (1|Profundidade), data = P_dados)
+
+fit_15 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Textura + (1|Profundidade/Agregado), data = P_dados)
+
+fit_16 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Textura + (1|Textura/Sistema) + (1|Profundidade/Agregado), data = P_dados)
+
+# Modelo com slope fixo - 4 efeitos fixos
+fit_17 <- lmer(BC_P_Lab_Per ~ Agregado + Profundidade + Sistema + Textura + (1|Profundidade) + (1|Sistema) + (1|Textura), data = P_dados)
+
+
+# --------- Modelo com slope aleatorio --------- #
+
+# Qunado vou fazer um modelo com efeito sobre o slope/inclinacao da reta,
+# Recebo essa mensagem: boundary (singular) fit: see help('isSingular')
+# When you obtain a singular fit, this is often indicating that the model is overfitted - that is, 
+# the random effects structure is too complex to be supported by the data, which naturally leads to 
+# the advice to remove the most complex part of the random effects structure (usually random slopes). 
+# The benefit of this approach is that it leads to a more parsimonious model that is not over-fitted.
+
+modelo_slope_aleatorio <- lmer(BC_P_Lab_Per ~ Agregado + (Agregado|Profundidade), data = P_dados)
+
+
+############################################################
+#                                                          #
+#---------- Comparar e selecionar o melhor modelo ---------#
+#                                                          #
+############################################################
+# Vamos comparando eles dois a dois
+# Usaremos BIC, AIC e valor de p.
+# menor BIC e AIC favorecem o modelo, 
+# valor de p < 0.05 indica modelos diferentes
+# Se os modelos forem iguais escolher o mais simples
+# O bayes.factor nos diz o quanto o tamanho amostral seria inflamado caso nao usarmos o aninhamento.
+# Se o Bayes.factor for 2, estariamos considerando uma amostra de tamanho dobrado, isso nao sria bom.
+
+# Pode-se usar model.comparison() ou 
+# anova() para max. verossimilahnca,e anova( , refit = FALSE) para RELM
+
+model.comparison(modelo_baseline_Agregado, fit_1)
+model.comparison(fit_1, fit_2)
+model.comparison(fit_2, fit_3)
+model.comparison(fit_3, fit_4)
+model.comparison(fit_3, fit_5)
+model.comparison(fit_5, fit_6)
+model.comparison(fit_5, fit_7)
+model.comparison(fit_10, fit_7)
+model.comparison(fit_10, fit_11)
+model.comparison(fit_11, fit_12)
+model.comparison(fit_11, fit_14)
+model.comparison(fit_11, fit_15) # o 15 ficou parecido
+model.comparison(fit_11, fit_16) # o 16 diferiu
+model.comparison(fit_11, fit_17)
+model.comparison(fit_16, fit_7)
+model.comparison(fit_11, modelo_multiplo)
+model.comparison(fit_16, modelo_multiplo)
+
+# Anova para comparar modleos
+anova(fit_11, fit_15)
+anova(fit_11, fit_16)
+anova(fit_11, fit_17)
+anova(fit_16, fit_17)
+
+ranova(fit_16) # anova para os parametros
+ranova (fit_11)
+
+#--------------- iMPORTANTE---------------------#
+
+# os modelos fit_11, fit_15, fit_16 e fit_17 ficaram pr?ximos.
+# Os modelos fit_11 e fit_16 foram os melhores dentro do que consegui pensar.
+
+# fit_11 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + (1|Textura/Sistema) + (1|Profundidade/Agregado), data = P_dados)
+# fit_16 <- lmer(BC_P_Lab_Per ~ Agregado + Sistema + Textura + (1|Textura/Sistema) + (1|Profundidade/Agregado), data = P_dados)
+
+# Acho que faz sentido, pois, Sistema aninhou em Textura e Agregado Aninhou em Profundidade.
+# Profundidade nao esta afetando P Labil apaarentemente.
+
+# Com o modleo 16 podemos comparar agregado, sistema e textura
+# com o modleo 11 podemos comparar agregado e sistema
+
+# MAS ? bom revisar as compara??es!!! Veja se eu nao comi bola!!
+
+
+
+# Compara os modelos similares graficamente - mAS NAO FUNCIONOU
+compare.fits(P_Lab_Per ~ Agregado|Textura + Profundidade, data = P_dados, fit_16)
+
+# Visualizar o modelo graficamente, mas nao funcionou para esses modleos.
+visualize(fit_16)
+visualize(fit_11)
+
+# Informacao do modelo
+summary(fit_16)
+summary(fit_11)
+
+# Extrair parametros estimados do modelo
+estimates(fit_16)
+estimates(fit_11)
+
+
+###################################################
+#                                                 #
+#         teste Post-Hoc - COMPARAR MEDIAS        # 
+#                                                 #
+###################################################
+
+# Usei o modleo fit_16, mas pode ser o fit_11
+# Pela regra da parcimonia escolher o modleo mais simples que ? o fit_11.
+# Mas considere teu conhecimento do assunto.
+
+
+# ----- Normalidade dos residuos --------- #
+# Residuos
+res=residuals(fit_16)
+
+
+# PLotar residuos do modelo
+plot(fit_16)
+
+# Normalidade dos erros
+
+# An?lise gr?fica dos res?duos - Gr?fico quantil-quantil
+qqnorm(res,col="blue",cex=0.7,xlab="Quantis da distribui??o normal",ylab="Res?duos")
+qqline(res,col="red")
+
+# se p >0.05 n?o rejeitamos a hipotese nula, residuos com distribuicao normal.
+# Teste de normalidade de Shapiro-Wilk: n <= 30
+shapiro.test(res)
+
+# Shapiro-Francia: n > 30
+sf.test(res) 
+
+# --------------- Analise de Variancia ---------------- #
+
+# Aqui eu estou ainda um pouco em duvida.
+# Temos muitas funcoes de anova no R, e muitos tipos (Tipo 1, Tipo 2, Tipo 3 e Tipo 4)
+
+# Type I (sequential or incremental SS)
+# Type I sums of squares are determined by considering each source (factor) sequentially, in the order they are listed in the model. 
+# The Type I SS may not be particularly useful for analyses of unbalanced, multi-way structures but may be useful for balanced data and nested models.
+
+# you must use car::Anova() to test the significance of a categorical predictor with more than two levels 
+# or of an interaction that involves a categorical predictor with more than two levels. 
+# car::Anova() carries out comparisons for each of a set of specific pairs of nested models - 
+# each comparison is between the full model and a reduced model with one predictor (or interaction) removed.
+
+#  Teste Chisq: The chi-square test is used to determine whether there is a statistical difference between two categorical variables (e.g., gender and preferred car colour).
+# teste F: On the other hand, the F test is used when you want to know whether there is a statistical difference between two continuous variables (e.g., height and weight).
+
+# Aparentemente deveriamos fazer uma Anova tipo I, porem ela nao mostra um valor de p.
+# Vi muitos exemplos em que o pessoal faz analise de compara?ao de medias sem usar o p
+# no arquivo texto do apcote eles falam que nao tem valor de p mesmo quando usamos afuncao anova() do tipo 1.
+
+# A minha duvida ? se term diferen?a entre as medias do sistema.
+
+# valor-F BAIXO mostra um caso em que as m?dias dos grupos est?o pr?ximas (baixa variabilidade) em rela??o ? variabilidade dentro de cada grupo. 
+# O valor-F ALTO mostra um caso em que a variabilidade das m?dias dos grupos ? grande em rela??o ? variabilidade intragrupo. 
+# Para rejeitar a hip?tese nula de que as m?dias do grupo s?o iguais, precisamos de um valor F alto.
+# O Valor F de sistema ? baixo, mas nao sei se essa interpretacaoe sta correta.
+# A textura media parece ser diferente das outras, mas na anova nao.
+# Mas nao sei se a interpretacao esta correta, se o valor de p <0.05 realmnte indica que ha diferenca entre media do grupo para o modleo Linear Misto.
+
+# Type I ANOVA - nao tem valor de p, apenas F
+anova(fit_16)
+
+# Type II ANOVA - Aqui apenas medias de agregados Agregado tem diferen?as
+Anova(fit_16, test.statistic =  "Chisq", type = 2) # Type II Wald chisquare tests
+Anova(fit_16, test.statistic =  "F", type = 2) # Type II Wald F tests with Kenward-Roger df
+
+# Type III ANOVA 
+Anova(fit_16, test.statistic =  "Chisq", type = 3) 
+Anova(fit_16, test.statistic =  "F", type = 3) 
+
+
+# --------------- Comparacao de medias ---------------- #
+# Duas formas:
+# 1 - glht function in multcomp package
+# 2 - emmeans() function in emmeans package
+
+# Aqui comparamos as medias considerando um efeito fixo por vez.
+# Eu sempre usei mais o "glht", mas vi que se usa bastante o emmeans.
+# So pode comparra se a variavel for efeito fixo do modelo.
+
+# Note that for lmer() models, the default pvalues from glht() and emmeans() will be different. 
+# This is because emmeans() uses the K-R estimate of degrees of freedom, 
+# while glht() defaults to a normal approximation (z-score).
+
+# 1 - glht function in multcomp package
+
+# Comparar os Agregados, verificar qual teste na anova usar.
+summary(glht(fit_16,linfct=mcp(Agregado="Tukey")))
+Tukey_Agregado=(glht(fit_16,linfct=mcp(Agregado="Tukey")))
+cld(Tukey_Agregado,level=0.95)
+
+# Comparar a Textura
+summary(glht(fit_16,linfct=mcp(Textura="Tukey")))
+Tukey_Textura=(glht(fit_16,linfct=mcp(Textura="Tukey")))
+cld(Tukey_Textura,level=0.95)
+
+# Comparar os Sistemas
+summary(glht(fit_9,linfct=mcp(Sistema="Tukey")))
+Tukey_Sistema=(glht(fit_9,linfct=mcp(Sistema="Tukey")))
+cld(Tukey_Sistema,level=0.95)
+
+# 2 - emmeans() function in emmeans package
+
+# Comparar os Agregados
+library(emmeans)
+Agregado_emmeans <- emmeans(fit_16, list(pairwise ~ Agregado), adjust = "tukey")
+
+
+# ACABOU!!!!! ? TETRA!!!!!
+
+detach(P_dados)
+
+
+
+
+```
+
